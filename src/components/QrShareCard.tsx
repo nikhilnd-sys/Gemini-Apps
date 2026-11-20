@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { Check, Copy, Download, Smartphone } from 'lucide-react';
+import { Check, Copy, Download, Presentation, Smartphone } from 'lucide-react';
 import type { WordCloudSession } from '../types/session';
 
 interface QrShareCardProps {
@@ -10,6 +10,7 @@ interface QrShareCardProps {
   configuredAppUrl?: string;
   onChangeBaseOrigin?: (origin: string) => void;
   onOpenMobilePreview: () => void;
+  onOpenPowerPointEmbed: () => void;
 }
 
 export const QrShareCard: React.FC<QrShareCardProps> = ({
@@ -19,6 +20,7 @@ export const QrShareCard: React.FC<QrShareCardProps> = ({
   configuredAppUrl,
   onChangeBaseOrigin,
   onOpenMobilePreview,
+  onOpenPowerPointEmbed,
 }) => {
   const [copied, setCopied] = useState(false);
   const qrWrapperRef = useRef<HTMLDivElement | null>(null);
@@ -235,6 +237,15 @@ export const QrShareCard: React.FC<QrShareCardProps> = ({
             <span>Mobile View</span>
           </button>
         </div>
+
+        <button
+          type="button"
+          onClick={onOpenPowerPointEmbed}
+          className="inline-flex min-h-[40px] w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800 transition-colors hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-700 whitespace-nowrap"
+        >
+          <Presentation className="h-3.5 w-3.5 text-blue-700" aria-hidden="true" />
+          <span>Embed in PowerPoint</span>
+        </button>
       </div>
     </div>
   );

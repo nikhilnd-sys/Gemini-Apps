@@ -123,6 +123,7 @@ export const ProjectorModal: React.FC<ProjectorModalProps> = ({
             totalResponses={session.responses.length}
             theme={session.theme}
             title={session.title}
+            colorBySentiment={session.colorBySentiment}
             showExport={false}
           />
         </div>

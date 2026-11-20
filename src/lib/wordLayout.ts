@@ -1,4 +1,9 @@
-import type { AggregatedWord, CloudTheme } from '../types/session';
+import type {
+  AggregatedWord,
+  CloudTheme,
+  Sentiment,
+  SentimentBreakdown,
+} from '../types/session';
 
 export interface PlacedWord {
   key: string;
@@ -12,6 +17,8 @@ export interface PlacedWord {
   fontWeight: number;
   width: number;
   height: number;
+  dominantSentiment: Sentiment;
+  sentimentBreakdown: SentimentBreakdown;
 }
 
 export interface ThemeSpec {
@@ -24,6 +31,30 @@ export interface ThemeSpec {
   isDark: boolean;
   palette: string[];
 }
+
+export const SENTIMENT_META: Record<
+  Sentiment,
+  { label: string; emoji: string; lightColor: string; darkColor: string }
+> = {
+  positive: {
+    label: 'Positive',
+    emoji: '😊',
+    lightColor: '#15803D',
+    darkColor: '#34D399',
+  },
+  neutral: {
+    label: 'Neutral',
+    emoji: '😐',
+    lightColor: '#334155',
+    darkColor: '#CBD5E1',
+  },
+  negative: {
+    label: 'Negative',
+    emoji: '😞',
+    lightColor: '#B91C1C',
+    darkColor: '#F87171',
+  },
+};
 
 export const CLOUD_THEMES: Record<CloudTheme, ThemeSpec> = {
   editorial: {
@@ -119,7 +150,8 @@ export function computeWordCloudLayout(
   themeId: CloudTheme,
   stageWidth = 960,
   stageHeight = 520,
-  allowRotation = true
+  allowRotation = true,
+  colorBySentiment = true
 ): PlacedWord[] {
   if (words.length === 0) return [];
 
@@ -144,13 +176,18 @@ export function computeWordCloudLayout(
           ? 0.85
           : 0.65
         : (word.count - minCount) / (maxCount - minCount);
-    // Non-linear boost so top words stand out clearly
     const fontSize = Math.round(minFont + Math.pow(t, 0.78) * (maxFont - minFont));
     const fontWeight = t > 0.55 ? 700 : 600;
     const h = hashString(word.key);
-    const color = theme.palette[idx === 0 ? 0 : h % theme.palette.length];
 
-    // Only rotate occasional short words (<= 9 chars) after top 2 words
+    const dominantSentiment: Sentiment = word.dominantSentiment || 'neutral';
+    const sentimentSpec = SENTIMENT_META[dominantSentiment];
+    const color = colorBySentiment
+      ? theme.isDark
+        ? sentimentSpec.darkColor
+        : sentimentSpec.lightColor
+      : theme.palette[idx === 0 ? 0 : h % theme.palette.length];
+
     const rotate =
       allowRotation && idx >= 2 && word.text.length <= 9 && h % 5 === 0 ? -90 : 0;
 
@@ -214,6 +251,12 @@ export function computeWordCloudLayout(
             fontWeight,
             width: measured.width,
             height: measured.height,
+            dominantSentiment,
+            sentimentBreakdown: word.sentimentBreakdown || {
+              positive: 0,
+              neutral: word.count,
+              negative: 0,
+            },
           });
           placedSuccessfully = true;
           break;

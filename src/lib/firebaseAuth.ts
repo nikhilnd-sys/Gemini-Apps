@@ -101,9 +101,15 @@ export function buildReviewEmailPayload(
   const subject = `[Lexicon Live] Responses for "${session.title}" (${session.responses.length} total)`;
   const expiresDate = new Date(session.expiresAt).toLocaleString();
 
+  const sentimentLabel = (s?: string) =>
+    s === 'positive' ? '😊 Positive' : s === 'negative' ? '😞 Negative' : '😐 Neutral';
+
   const topWordsLines = session.words
     .slice(0, 25)
-    .map((w, idx) => `${idx + 1}. ${w.text} (${w.count})`)
+    .map(
+      (w, idx) =>
+        `${idx + 1}. ${w.text} (${w.count}) — ${sentimentLabel(w.dominantSentiment)}`
+    )
     .join('\n');
 
   const responseLines = session.responses
@@ -115,7 +121,7 @@ export function buildReviewEmailPayload(
         minute: '2-digit',
       });
       const who = r.participantName ? ` — ${r.participantName}` : '';
-      return `• ${r.text}${who} (${time})`;
+      return `• ${r.text} [${sentimentLabel(r.sentiment)}]${who} (${time})`;
     })
     .join('\n');
 
@@ -140,6 +146,7 @@ export function buildReviewEmailPayload(
       (w) => `
       <tr>
         <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;font-weight:600;color:#0f172a;">${escapeHtml(w.text)}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#475569;">${escapeHtml(sentimentLabel(w.dominantSentiment))}</td>
         <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:right;font-family:monospace;color:#1d4ed8;">${w.count}</td>
       </tr>`
     )
@@ -158,6 +165,7 @@ export function buildReviewEmailPayload(
       return `
       <tr>
         <td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;color:#0f172a;">${escapeHtml(r.text)}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;color:#334155;">${escapeHtml(sentimentLabel(r.sentiment))}</td>
         <td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;color:#475569;">${escapeHtml(r.participantName || 'Anonymous')}</td>
         <td style="padding:8px 12px;border-bottom:1px solid #f1f5f9;text-align:right;color:#64748b;font-size:12px;">${escapeHtml(time)}</td>
       </tr>`;
@@ -181,11 +189,12 @@ export function buildReviewEmailPayload(
       <thead>
         <tr style="background:#f8fafc;">
           <th style="text-align:left;padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#475569;font-weight:600;">Term</th>
+          <th style="text-align:left;padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#475569;font-weight:600;">Sentiment</th>
           <th style="text-align:right;padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#475569;font-weight:600;">Count</th>
         </tr>
       </thead>
       <tbody>
-        ${topWordsHtml || '<tr><td colspan="2" style="padding:12px;color:#64748b;">No terms submitted yet.</td></tr>'}
+        ${topWordsHtml || '<tr><td colspan="3" style="padding:12px;color:#64748b;">No terms submitted yet.</td></tr>'}
       </tbody>
     </table>
 
@@ -194,12 +203,13 @@ export function buildReviewEmailPayload(
       <thead>
         <tr style="background:#f8fafc;">
           <th style="text-align:left;padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#475569;font-weight:600;">Response</th>
+          <th style="text-align:left;padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#475569;font-weight:600;">Sentiment</th>
           <th style="text-align:left;padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#475569;font-weight:600;">Participant</th>
           <th style="text-align:right;padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#475569;font-weight:600;">Submitted</th>
         </tr>
       </thead>
       <tbody>
-        ${responsesHtml || '<tr><td colspan="3" style="padding:12px;color:#64748b;">No responses yet.</td></tr>'}
+        ${responsesHtml || '<tr><td colspan="4" style="padding:12px;color:#64748b;">No responses yet.</td></tr>'}
       </tbody>
     </table>
   </div>`;

@@ -18,6 +18,7 @@ import {
 import type {
   CaseMode,
   CloudTheme,
+  Sentiment,
   WordCloudSession,
 } from './types/session';
 import {
@@ -27,12 +28,15 @@ import {
   initAuth,
   logout,
 } from './lib/firebaseAuth';
-import { CLOUD_THEMES } from './lib/wordLayout';
+import { CLOUD_THEMES, SENTIMENT_META } from './lib/wordLayout';
 import { WordCloudCanvas } from './components/WordCloudCanvas';
 import { QrShareCard } from './components/QrShareCard';
 import { ParticipantView } from './components/ParticipantView';
 import { EmailReviewModal } from './components/EmailReviewModal';
 import { ProjectorModal } from './components/ProjectorModal';
+import { VideoAnimatorSection } from './components/VideoAnimatorSection';
+import { EmbedView, type EmbedQrMode } from './components/EmbedView';
+import { PowerPointEmbedModal } from './components/PowerPointEmbedModal';
 
 const STORAGE_CODE_KEY = 'lexicon_live_active_code';
 
@@ -52,13 +56,38 @@ function getInitialJoinCodeFromUrl(): string | null {
   return join ? join.trim().toUpperCase() : null;
 }
 
+function getInitialEmbedParams(): {
+  code: string | null;
+  qr: EmbedQrMode;
+  theme: CloudTheme | null;
+} {
+  if (typeof window === 'undefined') {
+    return { code: null, qr: 'side', theme: null };
+  }
+  const params = new URLSearchParams(window.location.search);
+  const embed = params.get('embed');
+  const qrParam = params.get('qr');
+  const themeParam = params.get('theme');
+  const validThemes: CloudTheme[] = ['editorial', 'cobalt', 'botanical', 'obsidian'];
+  return {
+    code: embed ? embed.trim().toUpperCase() : null,
+    qr: qrParam === 'corner' || qrParam === 'none' ? qrParam : 'side',
+    theme: validThemes.includes(themeParam as CloudTheme)
+      ? (themeParam as CloudTheme)
+      : null,
+  };
+}
+
 export default function App() {
+  const initialEmbed = useMemo(() => getInitialEmbedParams(), []);
   const [urlJoinCode, setUrlJoinCode] = useState<string | null>(() =>
     getInitialJoinCodeFromUrl()
   );
-  const [viewMode, setViewMode] = useState<'organizer' | 'participant'>(() =>
-    getInitialJoinCodeFromUrl() ? 'participant' : 'organizer'
-  );
+  const [viewMode, setViewMode] = useState<'organizer' | 'participant' | 'embed'>(() => {
+    if (initialEmbed.code) return 'embed';
+    if (getInitialJoinCodeFromUrl()) return 'participant';
+    return 'organizer';
+  });
 
   const [session, setSession] = useState<WordCloudSession | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -77,6 +106,7 @@ export default function App() {
   const [draftEmail, setDraftEmail] = useState('');
   const [draftTheme, setDraftTheme] = useState<CloudTheme>('editorial');
   const [draftCaseMode, setDraftCaseMode] = useState<CaseMode>('title');
+  const [draftColorBySentiment, setDraftColorBySentiment] = useState(true);
   const [draftAllowMultiple, setDraftAllowMultiple] = useState(true);
   const [draftAskName, setDraftAskName] = useState(false);
   const [savingPrompt, setSavingPrompt] = useState(false);
@@ -84,6 +114,7 @@ export default function App() {
 
   // Quick organizer/desktop response add & join by code
   const [quickWord, setQuickWord] = useState('');
+  const [quickSentiment, setQuickSentiment] = useState<Sentiment>('neutral');
   const [quickSubmitting, setQuickSubmitting] = useState(false);
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [joinError, setJoinError] = useState<string | null>(null);
@@ -97,6 +128,8 @@ export default function App() {
   const [clearingResponses, setClearingResponses] = useState(false);
   const [emailModalOpen, setEmailModalOpen] = useState(false);
   const [projectorOpen, setProjectorOpen] = useState(false);
+  const [pptEmbedOpen, setPptEmbedOpen] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
 
   // Firebase Google Auth state (access token cached strictly in memory via firebaseAuth.ts)
   const [googleUser, setGoogleUser] = useState<User | null>(null);
@@ -113,6 +146,7 @@ export default function App() {
     setDraftEmail(s.organizerEmail || '');
     setDraftTheme(s.theme);
     setDraftCaseMode(s.caseMode);
+    setDraftColorBySentiment(s.colorBySentiment !== false);
     setDraftAllowMultiple(s.allowMultiple);
     setDraftAskName(s.askName);
   }, []);
@@ -210,8 +244,9 @@ export default function App() {
 
   // Initial load
   useEffect(() => {
-    if (urlJoinCode) {
-      loadSessionByCode(urlJoinCode, false);
+    const targetUrlCode = initialEmbed.code || urlJoinCode;
+    if (targetUrlCode) {
+      loadSessionByCode(targetUrlCode, false);
     } else {
       const savedCode = localStorage.getItem(STORAGE_CODE_KEY);
       if (savedCode) {
@@ -220,7 +255,7 @@ export default function App() {
         createFreshSession();
       }
     }
-  }, [urlJoinCode, loadSessionByCode, createFreshSession]);
+  }, [initialEmbed.code, urlJoinCode, loadSessionByCode, createFreshSession]);
 
   // Real-time WebSocket subscription for the active session
   useEffect(() => {
@@ -240,6 +275,7 @@ export default function App() {
 
       ws.onopen = () => {
         attempt = 0;
+        setWsConnected(true);
       };
 
       ws.onmessage = (event) => {
@@ -259,6 +295,7 @@ export default function App() {
       };
 
       ws.onclose = () => {
+        setWsConnected(false);
         if (cancelled) return;
         const delay = Math.min(8000, 1000 * Math.pow(2, attempt));
         attempt += 1;
@@ -270,6 +307,7 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      setWsConnected(false);
       if (reconnectTimerRef.current !== null) {
         window.clearTimeout(reconnectTimerRef.current);
       }
@@ -279,6 +317,31 @@ export default function App() {
       }
     };
   }, [session?.code]);
+
+  // Resilient HTTP sync fallback for embedded WebViews where WebSockets may be blocked
+  useEffect(() => {
+    const activeCode = session?.code || initialEmbed.code;
+    if (!activeCode || wsConnected) return;
+
+    const pollId = window.setInterval(async () => {
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(activeCode)}`);
+        if (res.status === 404) {
+          setExpiredOrMissing(true);
+          setSession(null);
+          return;
+        }
+        if (res.ok) {
+          const data = (await res.json()) as { session: WordCloudSession };
+          setSession(data.session);
+        }
+      } catch {
+        // Ignore transient network errors
+      }
+    }, 4000);
+
+    return () => window.clearInterval(pollId);
+  }, [session?.code, initialEmbed.code, wsConnected]);
 
   const joinUrl = useMemo(() => {
     if (!session) return '';
@@ -304,6 +367,7 @@ export default function App() {
           organizerEmail: draftEmail,
           theme: draftTheme,
           caseMode: draftCaseMode,
+          colorBySentiment: draftColorBySentiment,
           allowMultiple: draftAllowMultiple,
           askName: draftAskName,
         }),
@@ -354,14 +418,15 @@ export default function App() {
 
   const handleSubmitParticipantResponse = async (
     text: string,
-    participantName?: string
+    participantName?: string,
+    sentiment: Sentiment = 'neutral'
   ) => {
     const targetCode = session?.code || urlJoinCode;
     if (!targetCode) throw new Error('No active session.');
     const res = await fetch(`/api/sessions/${targetCode}/responses`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, participantName }),
+      body: JSON.stringify({ text, participantName, sentiment }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -377,7 +442,7 @@ export default function App() {
     if (!quickWord.trim() || !session) return;
     setQuickSubmitting(true);
     try {
-      await handleSubmitParticipantResponse(quickWord.trim());
+      await handleSubmitParticipantResponse(quickWord.trim(), undefined, quickSentiment);
       setQuickWord('');
     } finally {
       setQuickSubmitting(false);
@@ -489,9 +554,10 @@ export default function App() {
   const handleDownloadCsv = () => {
     if (!session) return;
     const rows = [
-      ['Response', 'Participant', 'Submitted At', 'Expires At'],
+      ['Response', 'Sentiment', 'Participant', 'Submitted At', 'Expires At'],
       ...session.responses.map((r) => [
         `"${r.text.replace(/"/g, '""')}"`,
+        `"${r.sentiment || 'neutral'}"`,
         `"${(r.participantName || 'Anonymous').replace(/"/g, '""')}"`,
         `"${new Date(r.createdAt).toISOString()}"`,
         `"${new Date(r.expiresAt).toISOString()}"`,
@@ -559,6 +625,22 @@ export default function App() {
     return session.words.filter((w) => w.text.toLowerCase().includes(q));
   }, [session, responseSearch]);
 
+  // Chromeless Live Slide Embed View for PowerPoint (?embed=CODE)
+  if (viewMode === 'embed') {
+    return (
+      <EmbedView
+        session={session}
+        isLoading={loading}
+        isExpiredOrMissing={expiredOrMissing}
+        joinUrl={joinUrl}
+        remainingLabel={remainingLabel}
+        themeOverride={initialEmbed.theme}
+        qrMode={initialEmbed.qr}
+        isLiveConnected={wsConnected}
+      />
+    );
+  }
+
   // Mobile QR-scanned Participant View (or Preview Mode)
   if (viewMode === 'participant') {
     return (
@@ -624,6 +706,12 @@ export default function App() {
               className="hover:text-slate-900 hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
             >
               Email &amp; Privacy
+            </a>
+            <a
+              href="#animate-video"
+              className="hover:text-slate-900 hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
+            >
+              Animate Video
             </a>
           </nav>
 
@@ -742,6 +830,7 @@ export default function App() {
                   totalResponses={session.responses.length}
                   theme={session.theme}
                   title={session.title}
+                  colorBySentiment={session.colorBySentiment}
                 />
 
                 {/* Quick desktop submission bar */}
@@ -763,6 +852,33 @@ export default function App() {
                     aria-label="Quick add word to cloud"
                     className="min-h-[42px] flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-700 focus:bg-white focus:outline-none"
                   />
+                  <div
+                    role="group"
+                    aria-label="Quick word sentiment"
+                    className="flex items-center gap-1 rounded-lg bg-slate-100 p-1 shrink-0"
+                  >
+                    {(['positive', 'neutral', 'negative'] as Sentiment[]).map((s) => {
+                      const meta = SENTIMENT_META[s];
+                      const active = quickSentiment === s;
+                      return (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => setQuickSentiment(s)}
+                          aria-pressed={active}
+                          title={meta.label}
+                          aria-label={meta.label}
+                          className={`inline-flex min-h-[34px] min-w-[36px] items-center justify-center rounded-md px-2 text-sm transition-colors ${
+                            active
+                              ? 'bg-white shadow-sm ring-1 ring-slate-200'
+                              : 'opacity-70 hover:opacity-100'
+                          }`}
+                        >
+                          <span aria-hidden="true">{meta.emoji}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                   <button
                     type="submit"
                     disabled={!quickWord.trim() || session.isLocked || quickSubmitting}
@@ -782,6 +898,7 @@ export default function App() {
                   configuredAppUrl={configuredAppUrl}
                   onChangeBaseOrigin={setQrBaseOrigin}
                   onOpenMobilePreview={() => setViewMode('participant')}
+                  onOpenPowerPointEmbed={() => setPptEmbedOpen(true)}
                 />
 
                 {/* Quick Email Review Trigger Card */}
@@ -962,8 +1079,17 @@ export default function App() {
                   {/* Participant permissions */}
                   <div className="space-y-3">
                     <span className="block text-sm font-semibold text-slate-900">
-                      Participant Options
+                      Display &amp; Participant Options
                     </span>
+                    <label className="flex min-h-[36px] cursor-pointer items-center gap-2.5 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={draftColorBySentiment}
+                        onChange={(e) => setDraftColorBySentiment(e.target.checked)}
+                        className="h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-700"
+                      />
+                      <span>Color-code word cloud by sentiment</span>
+                    </label>
                     <label className="flex min-h-[36px] cursor-pointer items-center gap-2.5 text-sm text-slate-700">
                       <input
                         type="checkbox"
@@ -1080,38 +1206,49 @@ export default function App() {
                     <thead>
                       <tr className="border-b border-slate-200 text-xs font-semibold text-slate-500">
                         <th className="py-2.5 pr-4">Response</th>
+                        <th className="py-2.5 px-4">Sentiment</th>
                         <th className="py-2.5 px-4">Participant</th>
                         <th className="py-2.5 px-4 text-right">Submitted</th>
                         <th className="py-2.5 pl-4 text-right">Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {filteredResponses.map((item) => (
-                        <tr key={item.id} className="hover:bg-slate-50/80">
-                          <td className="py-2.5 pr-4 font-medium text-slate-900">
-                            {item.text}
-                          </td>
-                          <td className="py-2.5 px-4 text-slate-600">
-                            {item.participantName || 'Anonymous'}
-                          </td>
-                          <td className="py-2.5 px-4 text-right font-mono text-xs text-slate-500 tabular-nums">
-                            {new Date(item.createdAt).toLocaleTimeString([], {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
-                          </td>
-                          <td className="py-2.5 pl-4 text-right">
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteResponse(item.id)}
-                              className="inline-flex min-h-[34px] items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-slate-500 hover:bg-red-50 hover:text-red-700 whitespace-nowrap"
+                      {filteredResponses.map((item) => {
+                        const meta = SENTIMENT_META[item.sentiment || 'neutral'];
+                        return (
+                          <tr key={item.id} className="hover:bg-slate-50/80">
+                            <td className="py-2.5 pr-4 font-medium text-slate-900">
+                              {item.text}
+                            </td>
+                            <td
+                              className="py-2.5 px-4 text-xs font-medium whitespace-nowrap"
+                              style={{ color: meta.lightColor }}
                             >
-                              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                              <span>Remove</span>
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                              <span aria-hidden="true">{meta.emoji}</span>{' '}
+                              <span>{meta.label}</span>
+                            </td>
+                            <td className="py-2.5 px-4 text-slate-600">
+                              {item.participantName || 'Anonymous'}
+                            </td>
+                            <td className="py-2.5 px-4 text-right font-mono text-xs text-slate-500 tabular-nums">
+                              {new Date(item.createdAt).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </td>
+                            <td className="py-2.5 pl-4 text-right">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteResponse(item.id)}
+                                className="inline-flex min-h-[34px] items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-slate-500 hover:bg-red-50 hover:text-red-700 whitespace-nowrap"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                                <span>Remove</span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1121,26 +1258,37 @@ export default function App() {
                     <thead>
                       <tr className="border-b border-slate-200 text-xs font-semibold text-slate-500">
                         <th className="py-2.5 pr-4">Normalized Term</th>
+                        <th className="py-2.5 px-4">Dominant Sentiment</th>
                         <th className="py-2.5 px-4 text-right">Mentions</th>
                         <th className="py-2.5 pl-4 text-right">Share</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {filteredWords.map((word) => (
-                        <tr key={word.key} className="hover:bg-slate-50/80">
-                          <td className="py-2.5 pr-4 font-semibold text-slate-900">
-                            {word.text}
-                          </td>
-                          <td className="py-2.5 px-4 text-right font-mono text-xs font-semibold text-blue-700 tabular-nums">
-                            {word.count}
-                          </td>
-                          <td className="py-2.5 pl-4 text-right font-mono text-xs text-slate-500 tabular-nums">
-                            {session.responses.length > 0
-                              ? `${Math.round((word.count / session.responses.length) * 100)}%`
-                              : '0%'}
-                          </td>
-                        </tr>
-                      ))}
+                      {filteredWords.map((word) => {
+                        const meta = SENTIMENT_META[word.dominantSentiment || 'neutral'];
+                        return (
+                          <tr key={word.key} className="hover:bg-slate-50/80">
+                            <td className="py-2.5 pr-4 font-semibold text-slate-900">
+                              {word.text}
+                            </td>
+                            <td
+                              className="py-2.5 px-4 text-xs font-medium whitespace-nowrap"
+                              style={{ color: meta.lightColor }}
+                            >
+                              <span aria-hidden="true">{meta.emoji}</span>{' '}
+                              <span>{meta.label}</span>
+                            </td>
+                            <td className="py-2.5 px-4 text-right font-mono text-xs font-semibold text-blue-700 tabular-nums">
+                              {word.count}
+                            </td>
+                            <td className="py-2.5 pl-4 text-right font-mono text-xs text-slate-500 tabular-nums">
+                              {session.responses.length > 0
+                                ? `${Math.round((word.count / session.responses.length) * 100)}%`
+                                : '0%'}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1373,6 +1521,9 @@ export default function App() {
                 </div>
               </div>
             </section>
+
+            {/* Section 5: Animate Uploaded Photo into Video */}
+            <VideoAnimatorSection session={session} />
           </>
         ) : (
           <div className="rounded-xl border border-slate-200 bg-white p-10 text-center">
@@ -1419,6 +1570,12 @@ export default function App() {
             joinUrl={joinUrl}
             remainingLabel={remainingLabel}
             onChangeTheme={handleThemeQuickSwitch}
+          />
+          <PowerPointEmbedModal
+            isOpen={pptEmbedOpen}
+            onClose={() => setPptEmbedOpen(false)}
+            session={session}
+            baseOrigin={qrBaseOrigin}
           />
         </>
       )}

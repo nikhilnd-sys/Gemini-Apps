@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ArrowLeft, CheckCircle2, Cloud, Send, ShieldCheck } from 'lucide-react';
-import type { WordCloudSession } from '../types/session';
+import type { Sentiment, WordCloudSession } from '../types/session';
+import { SENTIMENT_META } from '../lib/wordLayout';
 import { WordCloudCanvas } from './WordCloudCanvas';
 
 interface ParticipantViewProps {
@@ -8,10 +9,40 @@ interface ParticipantViewProps {
   isLoading: boolean;
   isExpiredOrMissing: boolean;
   remainingLabel: string;
-  onSubmitResponse: (text: string, participantName?: string) => Promise<void>;
+  onSubmitResponse: (
+    text: string,
+    participantName?: string,
+    sentiment?: Sentiment
+  ) => Promise<void>;
   onSwitchToOrganizer?: () => void;
   isPreviewMode?: boolean;
 }
+
+const SENTIMENT_OPTIONS: {
+  id: Sentiment;
+  emoji: string;
+  label: string;
+  activeClass: string;
+}[] = [
+  {
+    id: 'positive',
+    emoji: '😊',
+    label: 'Positive',
+    activeClass: 'border-emerald-700 bg-emerald-50 text-emerald-900',
+  },
+  {
+    id: 'neutral',
+    emoji: '😐',
+    label: 'Neutral',
+    activeClass: 'border-slate-700 bg-slate-100 text-slate-900',
+  },
+  {
+    id: 'negative',
+    emoji: '😞',
+    label: 'Negative',
+    activeClass: 'border-red-700 bg-red-50 text-red-900',
+  },
+];
 
 export const ParticipantView: React.FC<ParticipantViewProps> = ({
   session,
@@ -23,10 +54,12 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
   isPreviewMode = false,
 }) => {
   const [text, setText] = useState('');
+  const [sentiment, setSentiment] = useState<Sentiment>('neutral');
   const [participantName, setParticipantName] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submittedCount, setSubmittedCount] = useState(0);
   const [lastSubmittedWord, setLastSubmittedWord] = useState('');
+  const [lastSubmittedSentiment, setLastSubmittedSentiment] = useState<Sentiment>('neutral');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [showLiveCloud, setShowLiveCloud] = useState(false);
 
@@ -40,8 +73,9 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
     setErrorMsg(null);
     setSubmitting(true);
     try {
-      await onSubmitResponse(trimmed, participantName.trim() || undefined);
+      await onSubmitResponse(trimmed, participantName.trim() || undefined, sentiment);
       setLastSubmittedWord(trimmed);
+      setLastSubmittedSentiment(sentiment);
       setSubmittedCount((c) => c + 1);
       setText('');
     } catch (err) {
@@ -89,6 +123,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
   }
 
   const alreadySubmittedLocked = !session.allowMultiple && submittedCount > 0;
+  const lastSentimentMeta = SENTIMENT_META[lastSubmittedSentiment];
 
   return (
     <div className="flex min-h-screen flex-col bg-[#F8F9FA] text-slate-900">
@@ -148,6 +183,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
                 totalResponses={session.responses.length}
                 theme={session.theme}
                 title={session.title}
+                colorBySentiment={session.colorBySentiment}
                 compact={true}
                 showExport={false}
               />
@@ -163,7 +199,8 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
               <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-700" aria-hidden="true" />
               <div>
                 <p className="font-semibold">
-                  Added &ldquo;{lastSubmittedWord}&rdquo; to the word cloud
+                  Added &ldquo;{lastSubmittedWord}&rdquo; ({lastSentimentMeta.emoji}{' '}
+                  {lastSentimentMeta.label}) to the word cloud
                 </p>
                 <p className="mt-0.5 text-xs text-emerald-800">
                   {session.allowMultiple
@@ -183,30 +220,66 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
             </div>
           ) : alreadySubmittedLocked ? null : (
             <form id="participant-response-form" onSubmit={handleSubmit} className="space-y-4">
-              <div className="rounded-2xl border border-slate-200 bg-white p-5">
-                <label
-                  htmlFor="word-input"
-                  className="block text-sm font-semibold text-slate-900"
-                >
-                  Your word or short phrase
-                </label>
-                <p className="mt-1 text-xs text-slate-500">
-                  Separate multiple words with commas if you want to share more than one idea.
-                </p>
-                <input
-                  id="word-input"
-                  type="text"
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  maxLength={140}
-                  placeholder="e.g., Collaboration, Clarity, Speed"
-                  autoComplete="off"
-                  autoFocus={!isPreviewMode}
-                  className="mt-3 min-h-[48px] w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-base text-slate-900 placeholder:text-slate-400 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-700/20"
-                />
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-5">
+                <div>
+                  <label
+                    htmlFor="word-input"
+                    className="block text-sm font-semibold text-slate-900"
+                  >
+                    Your word or short phrase
+                  </label>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Separate multiple words with commas if you want to share more than one idea.
+                  </p>
+                  <input
+                    id="word-input"
+                    type="text"
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                    maxLength={140}
+                    placeholder="e.g., Collaboration, Clarity, Speed"
+                    autoComplete="off"
+                    autoFocus={!isPreviewMode}
+                    className="mt-3 min-h-[48px] w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-base text-slate-900 placeholder:text-slate-400 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-700/20"
+                  />
+                </div>
+
+                {/* Touch-friendly Sentiment Emoji Selector */}
+                <div>
+                  <span className="block text-sm font-semibold text-slate-900">
+                    How do you feel about this?
+                  </span>
+                  <div
+                    role="group"
+                    aria-label="Response sentiment"
+                    className="mt-2.5 grid grid-cols-3 gap-2.5"
+                  >
+                    {SENTIMENT_OPTIONS.map((opt) => {
+                      const isSelected = sentiment === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setSentiment(opt.id)}
+                          aria-pressed={isSelected}
+                          className={`flex min-h-[52px] items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-blue-700 whitespace-nowrap ${
+                            isSelected
+                              ? opt.activeClass
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          <span className="text-lg leading-none" aria-hidden="true">
+                            {opt.emoji}
+                          </span>
+                          <span>{opt.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
 
                 {session.askName && (
-                  <div className="mt-4">
+                  <div>
                     <label
                       htmlFor="participant-name"
                       className="block text-sm font-medium text-slate-700"
@@ -226,7 +299,7 @@ export const ParticipantView: React.FC<ParticipantViewProps> = ({
                 )}
 
                 {errorMsg && (
-                  <p role="alert" className="mt-3 text-xs font-medium text-red-700">
+                  <p role="alert" className="text-xs font-medium text-red-700">
                     {errorMsg}
                   </p>
                 )}

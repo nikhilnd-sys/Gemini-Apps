@@ -2,9 +2,18 @@ export type CloudTheme = 'editorial' | 'cobalt' | 'botanical' | 'obsidian';
 
 export type CaseMode = 'title' | 'lower' | 'original';
 
+export type Sentiment = 'positive' | 'neutral' | 'negative';
+
+export interface SentimentBreakdown {
+  positive: number;
+  neutral: number;
+  negative: number;
+}
+
 export interface WordResponse {
   id: string;
   text: string;
+  sentiment: Sentiment;
   participantName?: string;
   createdAt: number;
   expiresAt: number;
@@ -24,6 +33,8 @@ export interface AggregatedWord {
   text: string;
   count: number;
   lastSubmittedAt: number;
+  dominantSentiment: Sentiment;
+  sentimentBreakdown: SentimentBreakdown;
 }
 
 export interface WordCloudSession {
@@ -33,6 +44,7 @@ export interface WordCloudSession {
   organizerEmail: string;
   theme: CloudTheme;
   caseMode: CaseMode;
+  colorBySentiment: boolean;
   allowMultiple: boolean;
   askName: boolean;
   isLocked: boolean;
@@ -50,6 +62,7 @@ export interface CreateSessionInput {
   organizerEmail?: string;
   theme?: CloudTheme;
   caseMode?: CaseMode;
+  colorBySentiment?: boolean;
   allowMultiple?: boolean;
   askName?: boolean;
 }
@@ -60,6 +73,7 @@ export interface UpdateSessionInput {
   organizerEmail?: string;
   theme?: CloudTheme;
   caseMode?: CaseMode;
+  colorBySentiment?: boolean;
   allowMultiple?: boolean;
   askName?: boolean;
   isLocked?: boolean;

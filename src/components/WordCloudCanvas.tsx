@@ -1,9 +1,10 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { Download, RotateCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import type { AggregatedWord, CloudTheme } from '../types/session';
+import type { AggregatedWord, CloudTheme, Sentiment } from '../types/session';
 import {
   CLOUD_THEMES,
+  SENTIMENT_META,
   computeWordCloudLayout,
   exportSvgToPng,
 } from '../lib/wordLayout';
@@ -13,6 +14,7 @@ interface WordCloudCanvasProps {
   totalResponses: number;
   theme: CloudTheme;
   title: string;
+  colorBySentiment?: boolean;
   compact?: boolean;
   onWordClick?: (word: AggregatedWord) => void;
   showExport?: boolean;
@@ -23,6 +25,7 @@ export const WordCloudCanvas: React.FC<WordCloudCanvasProps> = ({
   totalResponses,
   theme,
   title,
+  colorBySentiment = true,
   compact = false,
   onWordClick,
   showExport = true,
@@ -34,8 +37,16 @@ export const WordCloudCanvas: React.FC<WordCloudCanvasProps> = ({
   const spec = CLOUD_THEMES[theme] || CLOUD_THEMES.editorial;
 
   const placedWords = useMemo(
-    () => computeWordCloudLayout(words, theme, 960, 520, allowRotation),
-    [words, theme, allowRotation]
+    () =>
+      computeWordCloudLayout(
+        words,
+        theme,
+        960,
+        520,
+        allowRotation,
+        colorBySentiment
+      ),
+    [words, theme, allowRotation, colorBySentiment]
   );
 
   const hoveredWord = useMemo(
@@ -183,7 +194,7 @@ export const WordCloudCanvas: React.FC<WordCloudCanvasProps> = ({
           color: spec.textMuted,
         }}
       >
-        <div className="flex items-center gap-2 tabular-nums">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 tabular-nums">
           {hoveredWord ? (
             <>
               <span className="font-semibold" style={{ color: spec.textPrimary }}>
@@ -193,6 +204,21 @@ export const WordCloudCanvas: React.FC<WordCloudCanvasProps> = ({
               <span>
                 {hoveredWord.count} {hoveredWord.count === 1 ? 'mention' : 'mentions'}
               </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                {SENTIMENT_META[hoveredWord.dominantSentiment || 'neutral'].emoji}{' '}
+                {SENTIMENT_META[hoveredWord.dominantSentiment || 'neutral'].label}
+              </span>
+              {hoveredWord.sentimentBreakdown && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>
+                    {hoveredWord.sentimentBreakdown.positive} 😊 /{' '}
+                    {hoveredWord.sentimentBreakdown.neutral} 😐 /{' '}
+                    {hoveredWord.sentimentBreakdown.negative} 😞
+                  </span>
+                </>
+              )}
               <span aria-hidden="true">·</span>
               <span>
                 {totalResponses > 0
@@ -205,6 +231,29 @@ export const WordCloudCanvas: React.FC<WordCloudCanvasProps> = ({
               <span>{totalResponses} responses</span>
               <span aria-hidden="true">·</span>
               <span>{words.length} unique terms</span>
+              {colorBySentiment && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="inline-flex flex-wrap items-center gap-3">
+                    {(['positive', 'neutral', 'negative'] as Sentiment[]).map((s) => {
+                      const meta = SENTIMENT_META[s];
+                      const swatch = spec.isDark ? meta.darkColor : meta.lightColor;
+                      return (
+                        <span key={s} className="inline-flex items-center gap-1">
+                          <span
+                            className="inline-block h-2.5 w-2.5 rounded-sm"
+                            style={{ backgroundColor: swatch }}
+                            aria-hidden="true"
+                          />
+                          <span>
+                            {meta.emoji} {meta.label}
+                          </span>
+                        </span>
+                      );
+                    })}
+                  </span>
+                </>
+              )}
             </>
           )}
         </div>

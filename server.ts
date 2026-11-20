@@ -6,12 +6,15 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import dotenv from 'dotenv';
+import { GoogleGenAI } from '@google/genai';
 import type {
   AggregatedWord,
   CaseMode,
   CloudTheme,
   CreateSessionInput,
   EmailRecord,
+  Sentiment,
+  SentimentBreakdown,
   UpdateSessionInput,
   WordCloudSession,
   WordResponse,
@@ -34,6 +37,7 @@ interface StoredSession {
   organizerEmail: string;
   theme: CloudTheme;
   caseMode: CaseMode;
+  colorBySentiment: boolean;
   allowMultiple: boolean;
   askName: boolean;
   isLocked: boolean;
@@ -75,10 +79,27 @@ function formatWordCase(raw: string, caseMode: CaseMode): string {
   return cleaned;
 }
 
+const VALID_SENTIMENTS: Sentiment[] = ['positive', 'neutral', 'negative'];
+
+function getDominantSentiment(breakdown: SentimentBreakdown): Sentiment {
+  if (breakdown.positive > breakdown.negative && breakdown.positive >= breakdown.neutral) {
+    return 'positive';
+  }
+  if (breakdown.negative > breakdown.positive && breakdown.negative >= breakdown.neutral) {
+    return 'negative';
+  }
+  return 'neutral';
+}
+
 function aggregateWords(responses: WordResponse[], caseMode: CaseMode): AggregatedWord[] {
   const map = new Map<
     string,
-    { variants: Map<string, number>; count: number; lastSubmittedAt: number }
+    {
+      variants: Map<string, number>;
+      count: number;
+      lastSubmittedAt: number;
+      sentimentBreakdown: SentimentBreakdown;
+    }
   >();
 
   for (const res of responses) {
@@ -86,15 +107,24 @@ function aggregateWords(responses: WordResponse[], caseMode: CaseMode): Aggregat
     if (!cleaned) continue;
     const key = cleaned.toLowerCase();
     const formatted = formatWordCase(cleaned, caseMode);
+    const sentiment: Sentiment = VALID_SENTIMENTS.includes(res.sentiment)
+      ? res.sentiment
+      : 'neutral';
 
     let entry = map.get(key);
     if (!entry) {
-      entry = { variants: new Map(), count: 0, lastSubmittedAt: res.createdAt };
+      entry = {
+        variants: new Map(),
+        count: 0,
+        lastSubmittedAt: res.createdAt,
+        sentimentBreakdown: { positive: 0, neutral: 0, negative: 0 },
+      };
       map.set(key, entry);
     }
     entry.count += 1;
     entry.lastSubmittedAt = Math.max(entry.lastSubmittedAt, res.createdAt);
     entry.variants.set(formatted, (entry.variants.get(formatted) || 0) + 1);
+    entry.sentimentBreakdown[sentiment] += 1;
   }
 
   const aggregated: AggregatedWord[] = [];
@@ -112,6 +142,8 @@ function aggregateWords(responses: WordResponse[], caseMode: CaseMode): Aggregat
       text: bestText,
       count: entry.count,
       lastSubmittedAt: entry.lastSubmittedAt,
+      dominantSentiment: getDominantSentiment(entry.sentimentBreakdown),
+      sentimentBreakdown: entry.sentimentBreakdown,
     });
   }
 
@@ -200,8 +232,16 @@ function loadStore() {
       const now = Date.now();
       for (const item of parsed) {
         if (item && item.code && now < item.expiresAt) {
+          item.colorBySentiment = item.colorBySentiment !== false;
           item.responses = Array.isArray(item.responses)
-            ? item.responses.filter((r) => now < r.expiresAt)
+            ? item.responses
+                .filter((r) => now < r.expiresAt)
+                .map((r) => ({
+                  ...r,
+                  sentiment: VALID_SENTIMENTS.includes(r.sentiment)
+                    ? r.sentiment
+                    : 'neutral',
+                }))
             : [];
           item.emailHistory = Array.isArray(item.emailHistory) ? item.emailHistory : [];
           sessions.set(item.code.toUpperCase(), item);
@@ -228,7 +268,11 @@ const VALID_CASE_MODES: CaseMode[] = ['title', 'lower', 'original'];
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '256kb' }));
+  app.use(express.json({ limit: '20mb' }));
+  app.use((_req, res, next) => {
+    res.removeHeader('X-Frame-Options');
+    next();
+  });
 
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws' });
@@ -316,6 +360,7 @@ async function startServer() {
       organizerEmail,
       theme,
       caseMode,
+      colorBySentiment: body.colorBySentiment !== false,
       allowMultiple: body.allowMultiple !== false,
       askName: Boolean(body.askName),
       isLocked: false,
@@ -379,6 +424,9 @@ async function startServer() {
     if (body.caseMode && VALID_CASE_MODES.includes(body.caseMode)) {
       session.caseMode = body.caseMode;
     }
+    if (typeof body.colorBySentiment === 'boolean') {
+      session.colorBySentiment = body.colorBySentiment;
+    }
     if (typeof body.allowMultiple === 'boolean') {
       session.allowMultiple = body.allowMultiple;
     }
@@ -423,6 +471,9 @@ async function startServer() {
     }
 
     const participantName = sanitizeText(req.body?.participantName, 60) || undefined;
+    const sentiment: Sentiment = VALID_SENTIMENTS.includes(req.body?.sentiment as Sentiment)
+      ? (req.body.sentiment as Sentiment)
+      : 'neutral';
     const now = Date.now();
 
     // Support comma or newline separated entries (up to 5 per submission)
@@ -443,6 +494,7 @@ async function startServer() {
       const responseItem: WordResponse = {
         id: crypto.randomUUID(),
         text: clipped,
+        sentiment,
         participantName,
         createdAt: now,
         expiresAt: Math.min(now + TTL_MS, session.expiresAt),
@@ -550,6 +602,197 @@ async function startServer() {
     broadcastToRoom(code, { type: 'session:updated', session: publicSession });
 
     res.status(201).json({ record, session: publicSession });
+  });
+
+  // Animate uploaded photo into video using Gemini Interactions API (gemini-omni-1.2-flash)
+  app.post('/api/animate-video', async (req, res) => {
+    req.setTimeout(310000);
+    res.setTimeout(310000);
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      res.status(500).json({
+        error: 'GEMINI_API_KEY is not configured on the server.',
+      });
+      return;
+    }
+
+    const rawImage = typeof req.body?.imageData === 'string' ? req.body.imageData.trim() : '';
+    const mimeType = typeof req.body?.mimeType === 'string' ? req.body.mimeType.trim() : 'image/png';
+    const aspectRatio = req.body?.aspectRatio === '9:16' ? '9:16' : '16:9';
+    const promptInput = sanitizeText(req.body?.prompt, 400);
+
+    const allowedMimeTypes = ['image/png', 'image/jpeg', 'image/webp'];
+    if (!allowedMimeTypes.includes(mimeType)) {
+      res.status(400).json({
+        error: 'Unsupported image format. Please upload a PNG, JPEG, or WebP photo.',
+      });
+      return;
+    }
+
+    const base64Data = rawImage.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
+    if (!base64Data) {
+      res.status(400).json({ error: 'Please upload a photo to animate.' });
+      return;
+    }
+
+    const motionPrompt =
+      promptInput ||
+      'Animate this photo with smooth, natural cinematic motion while preserving subject identity, composition, and lighting.';
+
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const interaction = await ai.interactions.create(
+        {
+          model: 'gemini-omni-1.2-flash',
+          input: [
+            {
+              type: 'image',
+              mime_type: mimeType,
+              data: base64Data,
+            },
+            {
+              type: 'text',
+              text: motionPrompt,
+            },
+          ],
+          background: false,
+          store: false,
+          stream: false,
+          response_format: {
+            type: 'video',
+            aspect_ratio: aspectRatio,
+          },
+        },
+        { timeout: 300000 }
+      );
+
+      let videoData = interaction.output_video?.data;
+      let videoMimeType = interaction.output_video?.mime_type || 'video/mp4';
+      let videoUri = interaction.output_video?.uri;
+
+      if (!videoData && !videoUri && Array.isArray(interaction.steps)) {
+        for (const step of interaction.steps) {
+          if (step.type === 'model_output' && Array.isArray(step.content)) {
+            const vidContent = step.content.find((c) => c.type === 'video') as
+              | { data?: string; uri?: string; mime_type?: string }
+              | undefined;
+            if (vidContent) {
+              videoData = vidContent.data;
+              videoUri = vidContent.uri;
+              videoMimeType = vidContent.mime_type || videoMimeType;
+              break;
+            }
+          }
+        }
+      }
+
+      if (videoData) {
+        res.json({
+          videoBase64: videoData,
+          mimeType: videoMimeType,
+          aspectRatio,
+        });
+        return;
+      }
+
+      if (videoUri) {
+        const fetched = await fetch(videoUri, {
+          headers: { 'x-goog-api-key': apiKey },
+        });
+        if (!fetched.ok) {
+          throw new Error(`Failed to fetch generated video asset (${fetched.status}).`);
+        }
+        const buf = Buffer.from(await fetched.arrayBuffer());
+        res.json({
+          videoBase64: buf.toString('base64'),
+          mimeType: videoMimeType,
+          aspectRatio,
+        });
+        return;
+      }
+
+      res.status(502).json({
+        error: 'Video generation completed without returning a video output.',
+      });
+    } catch (err: unknown) {
+      console.error('Video generation error:', err);
+      const errObj = err as { status?: number; message?: string };
+      const status = typeof errObj?.status === 'number' && errObj.status >= 400 ? errObj.status : 500;
+      let message = errObj?.message || 'Failed to generate video with gemini-omni-1.2-flash.';
+      if (status === 429 || status === 403) {
+        message = `${message} (Note: gemini-omni-1.2-flash requires a billing-enabled GEMINI_API_KEY in Settings > Secrets.)`;
+      }
+      res.status(status).json({ error: message });
+    }
+  });
+
+  // Downloadable Microsoft PowerPoint Content Add-in Manifest (.xml)
+  app.get('/api/sessions/:code/powerpoint-manifest.xml', (req, res) => {
+    purgeExpired();
+    const code = sanitizeText(req.params.code, 12).toUpperCase();
+    const session = sessions.get(code);
+
+    const escapeXml = (str: string) =>
+      str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+
+    const rawOrigin =
+      typeof req.query.origin === 'string' && req.query.origin.trim()
+        ? req.query.origin.trim()
+        : process.env.APP_URL || `${req.protocol}://${req.get('host') || 'localhost:3000'}`;
+    const cleanOrigin = rawOrigin.replace(/\/+$/, '');
+
+    const params = new URLSearchParams();
+    params.set('embed', code);
+    if (req.query.qr === 'corner' || req.query.qr === 'none') {
+      params.set('qr', req.query.qr);
+    }
+    if (typeof req.query.theme === 'string' && VALID_THEMES.includes(req.query.theme as CloudTheme)) {
+      params.set('theme', req.query.theme);
+    }
+
+    const sourceUrl = `${cleanOrigin}/?${params.toString()}`;
+    const hash = crypto.createHash('md5').update(`lexicon-live-${code}`).digest('hex');
+    const guid = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+    const displayName = session ? `Lexicon Live — ${session.title.slice(0, 48)}` : `Lexicon Live (${code})`;
+
+    const xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:type="ContentApp">
+  <Id>${guid}</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>Lexicon Live</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="${escapeXml(displayName)}"/>
+  <Description DefaultValue="Live QR-scannable word cloud slide output embedded in PowerPoint."/>
+  <AppDomains>
+    <AppDomain>${escapeXml(cleanOrigin)}</AppDomain>
+  </AppDomains>
+  <Hosts>
+    <Host Name="Presentation"/>
+  </Hosts>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="${escapeXml(sourceUrl)}"/>
+    <RequestedWidth>960</RequestedWidth>
+    <RequestedHeight>540</RequestedHeight>
+  </DefaultSettings>
+  <Permissions>ReadWriteDocument</Permissions>
+</OfficeApp>
+`;
+
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="lexicon-live-${code.toLowerCase()}.xml"`
+    );
+    res.send(xml);
   });
 
   // Vite dev middleware vs static production build
