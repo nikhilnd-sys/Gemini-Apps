@@ -1,0 +1,6 @@
+{
+  "name": "Lexicon Live",
+  "description": "Live QR-scannable word cloud app with customizable prompts, Gmail organizer review digests, and automatic 48-hour data expiration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
